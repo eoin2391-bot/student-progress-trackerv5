@@ -1,698 +1,983 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#3b82f6">
-    <meta name="description" content="Track student progress and collaboration behaviors">
-    <title>Student Progress Tracker</title>
-    <link rel="manifest" href="manifest.json">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📚</text></svg>">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1e40af">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="manifest.json">
+  <title>Primary Marks Book</title>
+  <script src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.23.5/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    * { box-sizing: border-box; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+  </style>
 </head>
-<body>
-    <div id="root"></div>
+<body class="bg-gray-50">
+  <div id="root"></div>
 
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script>
+    // ── IndexedDB Helper ─────────────────────────────────────────────────────────
+    const DB = {
+      db: null,
+      init() {
+        return new Promise((resolve, reject) => {
+          const req = indexedDB.open('marksbook', 1);
+          req.onupgradeneeded = e => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains('photos')) {
+              const store = db.createObjectStore('photos', { keyPath: 'id', autoIncrement: true });
+              store.createIndex('by_teacher_student_subject', ['teacherId', 'studentId', 'subject']);
+            }
+          };
+          req.onsuccess = e => { DB.db = e.target.result; resolve(); };
+          req.onerror = e => reject(e);
+        });
+      },
+      savePhoto(record) {
+        return new Promise((resolve, reject) => {
+          const tx = DB.db.transaction('photos', 'readwrite');
+          const req = tx.objectStore('photos').add(record);
+          req.onsuccess = e => resolve(e.target.result);
+          req.onerror = e => reject(e);
+        });
+      },
+      getPhotos({ teacherId, studentId, subject }) {
+        return new Promise((resolve, reject) => {
+          const tx = DB.db.transaction('photos', 'readonly');
+          const index = tx.objectStore('photos').index('by_teacher_student_subject');
+          const req = index.getAll([teacherId, studentId, subject]);
+          req.onsuccess = e => resolve(e.target.result);
+          req.onerror = e => reject(e);
+        });
+      },
+      deletePhoto(id) {
+        return new Promise((resolve, reject) => {
+          const tx = DB.db.transaction('photos', 'readwrite');
+          const req = tx.objectStore('photos').delete(id);
+          req.onsuccess = () => resolve();
+          req.onerror = e => reject(e);
+        });
+      }
+    };
 
-    <script type="text/babel">
-        const { useState } = React;
+    // ── localStorage Helper ──────────────────────────────────────────────────────
+    const Store = {
+      _get(key) {
+        try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+      },
+      _set(key, val) { localStorage.setItem(key, JSON.stringify(val)); },
+      _key(tid, suffix) { return 'teacher_' + tid + '_' + suffix; },
+      getTeachers() { return this._get('teachers') || []; },
+      saveTeachers(t) { this._set('teachers', t); },
+      getStudents(tid) { return this._get(this._key(tid, 'students')) || []; },
+      saveStudents(tid, s) { this._set(this._key(tid, 'students'), s); },
+      getMarks(tid) { return this._get(this._key(tid, 'marks')) || {}; },
+      saveMarks(tid, m) { this._set(this._key(tid, 'marks'), m); },
+      getNotes(tid) { return this._get(this._key(tid, 'notes')) || {}; },
+      saveNotes(tid, n) { this._set(this._key(tid, 'notes'), n); },
+      getMark(tid, studentId, subject, term) {
+        return (this.getMarks(tid)[studentId] || {})[subject]
+          ? (this.getMarks(tid)[studentId][subject][term] || '')
+          : '';
+      },
+      setMark(tid, studentId, subject, term, grade) {
+        const marks = this.getMarks(tid);
+        if (!marks[studentId]) marks[studentId] = {};
+        if (!marks[studentId][subject]) marks[studentId][subject] = {};
+        marks[studentId][subject][term] = grade;
+        this.saveMarks(tid, marks);
+      },
+      getNote(tid, studentId, subject) {
+        return ((this.getNotes(tid)[studentId] || {})[subject]) || '';
+      },
+      setNote(tid, studentId, subject, text) {
+        const notes = this.getNotes(tid);
+        if (!notes[studentId]) notes[studentId] = {};
+        notes[studentId][subject] = text;
+        this.saveNotes(tid, notes);
+      },
+      removeTeacherData(tid) {
+        ['students', 'marks', 'notes'].forEach(k => localStorage.removeItem(this._key(tid, k)));
+      }
+    };
+  </script>
 
-        // Lucide React icons as inline SVG components
-        const Plus = ({ size = 24 }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19"></line>
-                <line x1="5" y1="12" x2="19" y2="12"></line>
-            </svg>
-        );
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
 
-        const User = ({ size = 24 }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-                <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-        );
+    // ── Constants ────────────────────────────────────────────────────────────────
+    const SUBJECTS = [
+      'Writing',
+      'Spelling',
+      'Reading',
+      'Speaking & Listening',
+      'Mathematics - Number & Algebra',
+      'Measurement & Geometry',
+      'Statistics & Probability',
+      'Health',
+      'HASS',
+      'Science',
+      'Design & Technology'
+    ];
 
-        const CheckCircle = ({ size = 24, className = "" }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-                <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-                <polyline points="22 4 12 14.01 9 11.01"></polyline>
-            </svg>
-        );
+    const TERMS = ['T1', 'T2', 'T3', 'T4'];
+    const GRADES = ['A', 'B', 'C', 'D', 'E'];
 
-        const Circle = ({ size = 24, className = "" }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
-                <circle cx="12" cy="12" r="10"></circle>
-            </svg>
-        );
+    const GRADE_STYLE = {
+      A:  { bg: 'bg-emerald-500', text: 'text-white',       label: 'Excellent' },
+      B:  { bg: 'bg-green-300',   text: 'text-green-900',   label: 'High' },
+      C:  { bg: 'bg-yellow-300',  text: 'text-yellow-900',  label: 'Sound' },
+      D:  { bg: 'bg-orange-400',  text: 'text-white',       label: 'Limited' },
+      E:  { bg: 'bg-red-500',     text: 'text-white',       label: 'Very Limited' },
+      '': { bg: 'bg-gray-100',   text: 'text-gray-400',    label: '' }
+    };
 
-        const Edit2 = ({ size = 24 }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"></path>
-            </svg>
-        );
+    function genId() {
+      return Date.now().toString(36) + Math.random().toString(36).slice(2);
+    }
 
-        const Trash2 = ({ size = 24 }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="3 6 5 6 21 6"></polyline>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-            </svg>
-        );
+    // ── GradePill (display only) ─────────────────────────────────────────────────
+    function GradePill({ grade, size }) {
+      const s = GRADE_STYLE[grade || ''];
+      const sz = size === 'sm' ? 'w-8 h-8 text-xs'
+               : size === 'lg' ? 'w-14 h-14 text-xl'
+               : 'w-10 h-10 text-sm';
+      return (
+        <div className={`${sz} rounded-lg font-bold flex items-center justify-center select-none ${s.bg} ${s.text}`}>
+          {grade || '–'}
+        </div>
+      );
+    }
 
-        const Save = ({ size = 24 }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
-                <polyline points="17 21 17 13 7 13 7 21"></polyline>
-                <polyline points="7 3 7 8 15 8"></polyline>
-            </svg>
-        );
+    // ── GradeButton (interactive, cycles on click or accepts keyboard) ────────────
+    function GradeButton({ value, onChange }) {
+      const opts = ['', ...GRADES];
+      const cycle = () => onChange(opts[(opts.indexOf(value || '') + 1) % opts.length]);
+      const handleKey = e => {
+        const g = e.key.toUpperCase();
+        if (GRADES.includes(g)) onChange(g);
+        else if (e.key === 'Backspace' || e.key === 'Delete') onChange('');
+      };
+      const s = GRADE_STYLE[value || ''];
+      return (
+        <div
+          tabIndex={0}
+          onClick={cycle}
+          onKeyDown={handleKey}
+          title="Click to cycle A→B→C→D→E, or type a letter"
+          className={`w-10 h-10 rounded-lg font-bold text-sm flex items-center justify-center cursor-pointer
+            border-2 border-transparent hover:border-blue-400 focus:outline-none focus:border-blue-500
+            transition select-none ${s.bg} ${s.text}`}
+        >
+          {value || '–'}
+        </div>
+      );
+    }
 
-        const X = ({ size = 24 }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="6" x2="6" y2="18"></line>
-                <line x1="6" y1="6" x2="18" y2="18"></line>
-            </svg>
-        );
+    // ── LoginScreen ──────────────────────────────────────────────────────────────
+    function LoginScreen({ onLogin }) {
+      const [teachers, setTeachers] = useState(() => Store.getTeachers());
+      const [mode, setMode] = useState('select');
+      const [selected, setSelected] = useState(null);
+      const [form, setForm] = useState({ name: '', className: '', pin: '', pin2: '' });
+      const [pinInput, setPinInput] = useState('');
+      const [error, setError] = useState('');
 
-        const Users = ({ size = 24 }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                <circle cx="9" cy="7" r="4"></circle>
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-            </svg>
-        );
+      const setField = (key, raw) => setForm(p => ({ ...p, [key]: raw }));
 
-        const Star = ({ size = 24 }) => (
-            <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
-            </svg>
-        );
+      function createTeacher() {
+        if (!form.name.trim())           return setError('Name is required.');
+        if (!/^\d{4}$/.test(form.pin))   return setError('PIN must be exactly 4 digits.');
+        if (form.pin !== form.pin2)       return setError('PINs do not match.');
+        const t = { id: genId(), name: form.name.trim(), className: form.className.trim(), pin: form.pin };
+        const updated = [...teachers, t];
+        Store.saveTeachers(updated);
+        setTeachers(updated);
+        setMode('select');
+        setForm({ name: '', className: '', pin: '', pin2: '' });
+        setError('');
+      }
 
-        const TeacherProgressTracker = () => {
-            const [tasks, setTasks] = useState([
-                { 
-                    id: 1, 
-                    name: 'Agents of Learning', 
-                    description: '',
-                    observationElements: [
-                        { name: 'Respectful Ruby', descriptor: 'Respect & Kindness' },
-                        { name: 'Reliable Remy', descriptor: 'Responsibility & Self-Management' },
-                        { name: 'Teamwork Tara', descriptor: 'Collaboration & Communication' },
-                        { name: 'Skilful Suki', descriptor: 'Practice & Craftsmanship' },
-                        { name: 'Independent Imara', descriptor: 'Self Discipline & Initiative' },
-                        { name: 'Creative Casey', descriptor: 'Imagination & Innovation' },
-                        { name: 'Thinking Thelma', descriptor: 'Reflection & Deep Thinking' },
-                        { name: 'Motivated Macy', descriptor: 'Goals & Motivation' },
-                        { name: 'Determined Daisy', descriptor: 'Effort & Grit' },
-                        { name: 'Feedback Freya', descriptor: 'Growth Mindset & Improvement' }
-                    ]
-                },
-                { 
-                    id: 2, 
-                    name: 'Agents of Learning', 
-                    description: '',
-                    observationElements: [
-                        { name: 'Respectful Ruby', descriptor: 'Respect & Kindness' },
-                        { name: 'Reliable Remy', descriptor: 'Responsibility & Self-Management' },
-                        { name: 'Teamwork Tara', descriptor: 'Collaboration & Communication' },
-                        { name: 'Skilful Suki', descriptor: 'Practice & Craftsmanship' },
-                        { name: 'Independent Imara', descriptor: 'Self Discipline & Initiative' },
-                        { name: 'Creative Casey', descriptor: 'Imagination & Innovation' },
-                        { name: 'Thinking Thelma', descriptor: 'Reflection & Deep Thinking' },
-                        { name: 'Motivated Macy', descriptor: 'Goals & Motivation' },
-                        { name: 'Determined Daisy', descriptor: 'Effort & Grit' },
-                        { name: 'Feedback Freya', descriptor: 'Growth Mindset & Improvement' }
-                    ]
-                },
-                { 
-                    id: 3, 
-                    name: 'Agents of Learning', 
-                    description: '',
-                    observationElements: [
-                        { name: 'Respectful Ruby', descriptor: 'Respect & Kindness' },
-                        { name: 'Reliable Remy', descriptor: 'Responsibility & Self-Management' },
-                        { name: 'Teamwork Tara', descriptor: 'Collaboration & Communication' },
-                        { name: 'Skilful Suki', descriptor: 'Practice & Craftsmanship' },
-                        { name: 'Independent Imara', descriptor: 'Self Discipline & Initiative' },
-                        { name: 'Creative Casey', descriptor: 'Imagination & Innovation' },
-                        { name: 'Thinking Thelma', descriptor: 'Reflection & Deep Thinking' },
-                        { name: 'Motivated Macy', descriptor: 'Goals & Motivation' },
-                        { name: 'Determined Daisy', descriptor: 'Effort & Grit' },
-                        { name: 'Feedback Freya', descriptor: 'Growth Mindset & Improvement' }
-                    ]
-                }
-            ]);
-
-            const [students, setStudents] = useState([
-                { id: 1, name: 'Alice Johnson', progress: { 1: true, 2: false, 3: true } },
-                { id: 2, name: 'Bob Smith', progress: { 1: true, 2: true, 3: false } },
-                { id: 3, name: 'Carol Davis', progress: { 1: false, 2: true, 3: true } },
-                { id: 4, name: 'David Wilson', progress: { 1: true, 2: false, 3: false } }
-            ]);
-
-            const [studentObservations, setStudentObservations] = useState({});
-            const [selectedStudent, setSelectedStudent] = useState(null);
-            const [selectedTaskForObservation, setSelectedTaskForObservation] = useState(null);
-            const [isAddingTask, setIsAddingTask] = useState(false);
-            const [isAddingStudent, setIsAddingStudent] = useState(false);
-            const [newTaskName, setNewTaskName] = useState('');
-            const [newTaskDescription, setNewTaskDescription] = useState('');
-            const [newTaskElements, setNewTaskElements] = useState([{ name: '', descriptor: '' }]);
-            const [newStudentName, setNewStudentName] = useState('');
-            const [editingTask, setEditingTask] = useState(null);
-
-            const addObservationElement = () => {
-                setNewTaskElements([...newTaskElements, { name: '', descriptor: '' }]);
-            };
-
-            const updateObservationElement = (index, field, value) => {
-                const updated = [...newTaskElements];
-                updated[index][field] = value;
-                setNewTaskElements(updated);
-            };
-
-            const removeObservationElement = (index) => {
-                setNewTaskElements(newTaskElements.filter((_, i) => i !== index));
-            };
-
-            const addTask = () => {
-                if (newTaskName.trim()) {
-                    const newTask = {
-                        id: Math.max(...tasks.map(t => t.id), 0) + 1,
-                        name: newTaskName,
-                        description: newTaskDescription,
-                        observationElements: newTaskElements.filter(el => el.name.trim() !== '')
-                    };
-                    setTasks([...tasks, newTask]);
-                    
-                    setStudents(students.map(student => ({
-                        ...student,
-                        progress: { ...student.progress, [newTask.id]: false }
-                    })));
-                    
-                    setNewTaskName('');
-                    setNewTaskDescription('');
-                    setNewTaskElements([{ name: '', descriptor: '' }]);
-                    setIsAddingTask(false);
-                }
-            };
-
-            const addStudent = () => {
-                if (newStudentName.trim()) {
-                    const newStudent = {
-                        id: Math.max(...students.map(s => s.id), 0) + 1,
-                        name: newStudentName,
-                        progress: Object.fromEntries(tasks.map(task => [task.id, false]))
-                    };
-                    setStudents([...students, newStudent]);
-                    setNewStudentName('');
-                    setIsAddingStudent(false);
-                }
-            };
-
-            const toggleProgress = (studentId, taskId) => {
-                setStudents(students.map(student => 
-                    student.id === studentId 
-                        ? { 
-                            ...student, 
-                            progress: { 
-                                ...student.progress, 
-                                [taskId]: !student.progress[taskId] 
-                            }
-                        }
-                        : student
-                ));
-            };
-
-            const toggleStudentObservation = (studentId, taskId, elementIndex) => {
-                setStudentObservations(prev => ({
-                    ...prev,
-                    [studentId]: {
-                        ...prev[studentId],
-                        [taskId]: {
-                            ...prev[studentId]?.[taskId],
-                            [elementIndex]: !prev[studentId]?.[taskId]?.[elementIndex]
-                        }
-                    }
-                }));
-            };
-
-            const deleteTask = (taskId) => {
-                setTasks(tasks.filter(task => task.id !== taskId));
-                setStudents(students.map(student => {
-                    const newProgress = { ...student.progress };
-                    delete newProgress[taskId];
-                    return { ...student, progress: newProgress };
-                }));
-                const newObservations = { ...studentObservations };
-                Object.keys(newObservations).forEach(studentId => {
-                    if (newObservations[studentId][taskId]) {
-                        delete newObservations[studentId][taskId];
-                    }
-                });
-                setStudentObservations(newObservations);
-            };
-
-            const editTask = (taskId, newName, newDescription) => {
-                setTasks(tasks.map(task => 
-                    task.id === taskId 
-                        ? { ...task, name: newName, description: newDescription }
-                        : task
-                ));
-                setEditingTask(null);
-            };
-
-            const getCompletionPercentage = (student) => {
-                const completed = Object.values(student.progress).filter(Boolean).length;
-                return tasks.length > 0 ? Math.round((completed / tasks.length) * 100) : 0;
-            };
-
-            const getTaskCompletionCount = (taskId) => {
-                return students.filter(student => student.progress[taskId]).length;
-            };
-
-            const getStudentObservationValue = (studentId, taskId, elementIndex) => {
-                return studentObservations[studentId]?.[taskId]?.[elementIndex] || false;
-            };
-
-            const getObservationProgress = (studentId) => {
-                const studentObs = studentObservations[studentId] || {};
-                let totalElements = 0;
-                let completedElements = 0;
-
-                tasks.forEach(task => {
-                    if (task.observationElements) {
-                        totalElements += task.observationElements.length;
-                        task.observationElements.forEach((_, elementIndex) => {
-                            if (studentObs[task.id]?.[elementIndex]) {
-                                completedElements++;
-                            }
-                        });
-                    }
-                });
-
-                return totalElements > 0 ? Math.round((completedElements / totalElements) * 100) : 0;
-            };
-
-            const getStudentObservationDetails = (studentId) => {
-                const details = [];
-                tasks.forEach(task => {
-                    if (task.observationElements) {
-                        task.observationElements.forEach((element, elementIndex) => {
-                            const elementName = typeof element === 'object' ? element.name : element;
-                            const elementDescriptor = typeof element === 'object' ? element.descriptor : '';
-                            details.push({
-                                taskName: task.name,
-                                element: elementName,
-                                descriptor: elementDescriptor,
-                                completed: getStudentObservationValue(studentId, task.id, elementIndex),
-                                taskId: task.id,
-                                elementIndex: elementIndex
-                            });
-                        });
-                    }
-                });
-                return details;
-            };
-
-            return (
-                <div className="min-h-screen bg-gray-50 p-6">
-                    <div className="max-w-7xl mx-auto">
-                        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-                            <h1 className="text-3xl font-bold text-gray-800 mb-2">Student Progress Tracker</h1>
-                            <p className="text-gray-600">Manage tasks, track completion, and observe individual student collaboration & learning behaviors</p>
-                        </div>
-
-                        <div className="bg-white rounded-lg shadow-lg p-6 mb-6">
-                            <div className="flex justify-between items-center mb-4">
-                                <h2 className="text-2xl font-semibold text-gray-800">Tasks</h2>
-                                <button
-                                    onClick={() => setIsAddingTask(true)}
-                                    className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 flex items-center gap-2"
-                                >
-                                    <Plus size={20} />
-                                    Add Task
-                                </button>
-                            </div>
-
-                            {isAddingTask && (
-                                <div className="bg-blue-50 p-4 rounded-lg mb-4">
-                                    <input
-                                        type="text"
-                                        placeholder="Task name"
-                                        value={newTaskName}
-                                        onChange={(e) => setNewTaskName(e.target.value)}
-                                        className="w-full p-2 border border-gray-300 rounded mb-2"
-                                    />
-                                    <input
-                                        type="text"
-                                        placeholder="Task description"
-                                        value={newTaskDescription}
-                                        onChange={(e) => setNewTaskDescription(e.target.value)}
-                                        className="w-full p-2 border border-gray-300 rounded mb-3"
-                                    />
-                                    
-                                    <div className="mb-3">
-                                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                                            Observation Elements (behaviors to track per student):
-                                        </label>
-                                        {newTaskElements.map((element, index) => (
-                                            <div key={index} className="flex gap-2 mb-2">
-                                                <input
-                                                    type="text"
-                                                    placeholder="e.g., Respectful Ruby"
-                                                    value={element.name}
-                                                    onChange={(e) => updateObservationElement(index, 'name', e.target.value)}
-                                                    className="flex-1 p-2 border border-gray-300 rounded"
-                                                />
-                                                <input
-                                                    type="text"
-                                                    placeholder="e.g., Respect & Kindness"
-                                                    value={element.descriptor}
-                                                    onChange={(e) => updateObservationElement(index, 'descriptor', e.target.value)}
-                                                    className="flex-1 p-2 border border-gray-300 rounded"
-                                                />
-                                                {newTaskElements.length > 1 && (
-                                                    <button
-                                                        onClick={() => removeObservationElement(index)}
-                                                        className="px-3 py-2 bg-red-500 text-white rounded hover:bg-red-600"
-                                                    >
-                                                        <X size={16} />
-                                                    </button>
-                                                )}
-                                            </div>
-                                        ))}
-                                        <button
-                                            onClick={addObservationElement}
-                                            className="text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1"
-                                        >
-                                            <Plus size={16} />
-                                            Add observation element
-                                        </button>
-                                    </div>
-
-                                    <div className="flex gap-2">
-                                        <button
-                                            onClick={addTask}
-                                            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 flex items-center gap-2"
-                                        >
-                                            <Save size={16} />
-                                            Save
-                                        </button>
-                                        <button
-                                            onClick={() => {
-                                                setIsAddingTask(false);
-                                                setNewTaskElements([{ name: '', descriptor: '' }]);
-                                            }}
-                                            className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 flex items-center gap-2"
-                                        >
-                                            <X size={16} />
-                                            Cancel
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
-                                {tasks.map(task => (
-                                    <div key={task.id} className="bg-gradient-to-r from-blue-500 to-purple-600 rounded-lg p-4 text-white">
-                                        {editingTask === task.id ? (
-                                            <div>
-                                                <input
-                                                    type="text"
-                                                    defaultValue={task.name}
-                                                    className="w-full p-2 text-gray-800 rounded mb-2"
-                                                    onKeyDown={(e) => {
-                                                        if (e.key === 'Enter') {
-                                                            editTask(task.id, e.target.value, task.description);
-                                                        }
-                                                    }}
-                                                />
-                                            </div>
-                                        ) : (
-                                            <>
-                                                <div className="flex justify-between items-start mb-2">
-                                                    <h3 className="text-lg font-semibold">{task.name}</h3>
-                                                    <div className="flex gap-1">
-                                                        <button
-                                                            onClick={() => setEditingTask(task.id)}
-                                                            className="text-white hover:text-gray-200"
-                                                        >
-                                                            <Edit2 size={16} />
-                                                        </button>
-                                                        <button
-                                                            onClick={() => deleteTask(task.id)}
-                                                            className="text-white hover:text-red-200"
-                                                        >
-                                                            <Trash2 size={16} />
-                                                        </button>
-                                                    </div>
-                                                </div>
-                                                {task.description && <p className="text-blue-100 text-sm mb-3">{task.description}</p>}
-                                                <div className="flex justify-between items-center mb-3">
-                                                    <span className="bg-white bg-opacity-20 px-2 py-1 rounded text-sm">
-                                                        {getTaskCompletionCount(task.id)}/{students.length} completed
-                                                    </span>
-                                                    <button
-                                                        onClick={() => setSelectedTaskForObservation(
-                                                            selectedTaskForObservation === task.id ? null : task.id
-                                                        )}
-                                                        className="bg-white bg-opacity-20 px-3 py-1 rounded text-sm hover:bg-opacity-30 flex items-center gap-1"
-                                                    >
-                                                        <Users size={16} />
-                                                        {selectedTaskForObservation === task.id ? 'Hide' : 'Observe'}
-                                                    </button>
-                                                </div>
-                                                
-                                                {task.observationElements && task.observationElements.length > 0 && (
-                                                    <div className="text-xs bg-white bg-opacity-10 p-2 rounded">
-                                                        <strong>Tracking:</strong> {task.observationElements.map(el => typeof el === 'object' ? el.name : el).join(', ')}
-                                                    </div>
-                                                )}
-                                            </>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-
-                            {selectedTaskForObservation && (
-                                <div className="mt-6 bg-white border rounded-lg overflow-hidden">
-                                    <div className="bg-gray-50 p-4 border-b">
-                                        <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                                            <Users size={20} />
-                                            Student Observation: {tasks.find(t => t.id === selectedTaskForObservation)?.name}
-                                            <span className="text-sm text-gray-600 font-normal ml-2">
-                                                (Data is linked to individual student profiles)
-                                            </span>
-                                        </h3>
-                                    </div>
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full">
-                                            <thead className="bg-gray-100">
-                                                <tr>
-                                                    <th className="px-4 py-3 text-left text-sm font-medium text-gray-700 w-48">Student</th>
-                                                    {tasks.find(t => t.id === selectedTaskForObservation)?.observationElements?.map((element, index) => {
-                                                        const isObject = typeof element === 'object';
-                                                        const elementName = isObject ? element.name : element;
-                                                        const descriptor = isObject ? element.descriptor : null;
-                                                        
-                                                        return (
-                                                            <th key={index} className="px-4 py-3 text-center text-sm font-medium text-gray-700 min-w-52">
-                                                                <div className="font-semibold">{elementName}</div>
-                                                                {descriptor && (
-                                                                    <div className="text-xs font-normal text-blue-600 mt-1 whitespace-normal leading-tight">
-                                                                        {descriptor}
-                                                                    </div>
-                                                                )}
-                                                            </th>
-                                                        );
-                                                    })}
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-gray-200">
-                                                {students.map(student => (
-                                                    <tr key={student.id} className="hover:bg-gray-50">
-                                                        <td className="px-4 py-3 text-sm font-medium text-gray-900">
-                                                            {student.name}
-                                                        </td>
-                                                        {tasks.find(t => t.id === selectedTaskForObservation)?.observationElements?.map((_, elementIndex) => (
-                                                            <td key={elementIndex} className="px-4 py-3 text-center">
-                                                                <button
-                                                                    onClick={() => toggleStudentObservation(student.id, selectedTaskForObservation, elementIndex)}
-                                                                    className="inline-flex items-center justify-center w-8 h-8 rounded-full hover:bg-gray-100"
-                                                                >
-                                                                    {getStudentObservationValue(student.id, selectedTaskForObservation, elementIndex) ? (
-                                                                        <CheckCircle size={20} className="text-green-600" />
-                                                                    ) : (
-                                                                        <Circle size={20} className="text-gray-400" />
-                                                                    )}
-                                                                </button>
-                                                            </td>
-                                                        ))}
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-
-                        <div className="bg-white rounded-lg shadow-lg p-6">
-                            <div className="flex justify-between items-center mb-4">
-                                <h2 className="text-2xl font-semibold text-gray-800">Students</h2>
-                                <button
-                                    onClick={() => setIsAddingStudent(true)}
-                                    className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 flex items-center gap-2"
-                                >
-                                    <Plus size={20} />
-                                    Add Student
-                                </button>
-                            </div>
-
-                            {isAddingStudent && (
-                                <div className="bg-green-50 p-4 rounded-lg mb-4">
-                                    <input
-                                        type="text"
-                                        placeholder="Student name"
-                                        value={newStudentName}
-                                        onChange={(e) => setNewStudentName(e.target.value)}
-                                        className="w-full p-2 border border-gray-300 rounded mb-2"
-                                    />
-                                    <div className="flex gap-2">
-                                        <button
-                                            onClick={addStudent}
-                                            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 flex items-center gap-2"
-                                        >
-                                            <Save size={16} />
-                                            Save
-                                        </button>
-                                        <button
-                                            onClick={() => setIsAddingStudent(false)}
-                                            className="bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600 flex items-center gap-2"
-                                        >
-                                            <X size={16} />
-                                            Cancel
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                                {students.map(student => (
-                                    <div key={student.id} className="bg-gradient-to-r from-green-400 to-blue-500 rounded-lg p-4 text-white">
-                                        <div className="flex items-center justify-between mb-3">
-                                            <div className="flex items-center gap-2">
-                                                <User size={20} />
-                                                <h3 className="font-semibold">{student.name}</h3>
-                                            </div>
-                                            <button
-                                                onClick={() => setSelectedStudent(selectedStudent === student.id ? null : student.id)}
-                                                className="bg-white bg-opacity-20 px-3 py-1 rounded text-sm hover:bg-opacity-30"
-                                            >
-                                                {selectedStudent === student.id ? 'Hide' : 'Details'}
-                                            </button>
-                                        </div>
-                                        
-                                        <div className="mb-2">
-                                            <p className="text-xs text-blue-100 mb-1 flex items-center gap-1">
-                                                <Star size={12} />
-                                                Collaboration & Behaviors
-                                            </p>
-                                            <div className="bg-white bg-opacity-20 rounded-full h-2 mb-1">
-                                                <div 
-                                                    className="bg-yellow-300 rounded-full h-2 transition-all duration-300"
-                                                    style={{ width: `${getObservationProgress(student.id)}%` }}
-                                                ></div>
-                                            </div>
-                                            <p className="text-sm mb-1">{getObservationProgress(student.id)}% Observed Positively</p>
-                                            <div className="flex justify-between text-xs text-blue-200">
-                                                <span>Developing</span>
-                                                <span>Sound</span>
-                                                <span>High</span>
-                                                <span>Excellent</span>
-                                            </div>
-                                        </div>
-
-                                        {selectedStudent === student.id && (
-                                            <div className="mt-4 space-y-3">
-                                                <div>
-                                                    <p className="text-sm font-medium mb-2">Task Completion:</p>
-                                                    <div className="space-y-2">
-                                                        {tasks.map(task => (
-                                                            <div key={task.id} className="flex items-center justify-between bg-white bg-opacity-10 p-2 rounded">
-                                                                <span className="text-sm">{task.name}</span>
-                                                                <button
-                                                                    onClick={() => toggleProgress(student.id, task.id)}
-                                                                    className="ml-2"
-                                                                >
-                                                                    {student.progress[task.id] ? 
-                                                                        <CheckCircle size={20} className="text-green-300" /> : 
-                                                                        <Circle size={20} className="text-gray-300" />
-                                                                    }
-                                                                </button>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                </div>
-
-                                                <div>
-                                                    <p className="text-sm font-medium mb-2 flex items-center gap-1">
-                                                        <Star size={14} />
-                                                        Collaboration & Behavior Observations:
-                                                    </p>
-                                                    <div className="space-y-1 max-h-48 overflow-y-auto">
-                                                        {getStudentObservationDetails(student.id).map((obs, index) => (
-                                                            <div key={index} className="flex items-center justify-between bg-white bg-opacity-10 p-2 rounded text-xs">
-                                                                <div>
-                                                                    <div className="font-medium">{obs.element}</div>
-                                                                    {obs.descriptor && (
-                                                                        <div className="text-blue-200">{obs.descriptor}</div>
-                                                                    )}
-                                                                    <div className="text-blue-200 text-[10px]">in {obs.taskName}</div>
-                                                                </div>
-                                                                <button
-                                                                    onClick={() => toggleStudentObservation(student.id, obs.taskId, obs.elementIndex)}
-                                                                    className="ml-2"
-                                                                >
-                                                                    {obs.completed ? 
-                                                                        <CheckCircle size={16} className="text-yellow-300" /> : 
-                                                                        <Circle size={16} className="text-gray-300" />
-                                                                    }
-                                                                </button>
-                                                            </div>
-                                                        ))}
-                                                        {getStudentObservationDetails(student.id).length === 0 && (
-                                                            <p className="text-xs text-blue-200 italic">No observation elements defined yet</p>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            );
-        };
-
-        ReactDOM.render(<TeacherProgressTracker />, document.getElementById('root'));
-    </script>
-
-    <script>
-        // Register service worker for PWA functionality
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js')
-                    .then(registration => console.log('SW registered'))
-                    .catch(err => console.log('SW registration failed'));
-            });
+      function verifyPin() {
+        if (pinInput === selected.pin) {
+          setPinInput(''); setError('');
+          onLogin(selected);
+        } else {
+          setError('Incorrect PIN. Try again.');
+          setPinInput('');
         }
-    </script>
+      }
+
+      if (mode === 'pin') return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-700 to-indigo-900 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm">
+            <div className="text-center mb-6">
+              <div className="w-16 h-16 rounded-full bg-blue-100 flex items-center justify-center text-2xl font-bold text-blue-700 mx-auto mb-3">
+                {selected.name.charAt(0).toUpperCase()}
+              </div>
+              <h2 className="text-xl font-bold text-gray-800">{selected.name}</h2>
+              {selected.className && <p className="text-gray-500 text-sm">{selected.className}</p>}
+            </div>
+            <label className="block text-sm font-medium text-gray-700 mb-2 text-center">Enter your 4-digit PIN</label>
+            <input
+              type="password" maxLength={4} value={pinInput}
+              onChange={e => setPinInput(e.target.value.replace(/\D/g, ''))}
+              onKeyDown={e => e.key === 'Enter' && verifyPin()}
+              className="w-full border-2 border-gray-200 rounded-xl px-4 py-3 text-center text-3xl tracking-[0.5em] focus:outline-none focus:border-blue-500"
+              autoFocus
+            />
+            {error && <p className="text-red-500 text-sm mt-2 text-center">{error}</p>}
+            <button onClick={verifyPin}
+              className="mt-4 w-full bg-blue-600 text-white rounded-xl py-3 font-semibold hover:bg-blue-700 transition">
+              Unlock
+            </button>
+            <button onClick={() => { setMode('select'); setError(''); setPinInput(''); }}
+              className="mt-3 w-full text-gray-400 hover:text-gray-600 text-sm transition py-1">
+              ← Back to profiles
+            </button>
+          </div>
+        </div>
+      );
+
+      if (mode === 'create') return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-700 to-indigo-900 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm">
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Create Profile</h2>
+            <div className="space-y-4">
+              {[
+                { label: 'Your name *',        key: 'name',      type: 'text',     placeholder: 'e.g. Ms Smith',          digits: false },
+                { label: 'Class / Year level', key: 'className', type: 'text',     placeholder: 'e.g. Year 3B (optional)', digits: false },
+                { label: '4-digit PIN *',      key: 'pin',       type: 'password', placeholder: '••••',                   digits: true  },
+                { label: 'Confirm PIN *',      key: 'pin2',      type: 'password', placeholder: '••••',                   digits: true  }
+              ].map(f => (
+                <div key={f.key}>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">{f.label}</label>
+                  <input
+                    type={f.type}
+                    maxLength={f.digits ? 4 : undefined}
+                    value={form[f.key]}
+                    placeholder={f.placeholder}
+                    onChange={e => setField(f.key, f.digits ? e.target.value.replace(/\D/g, '') : e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && createTeacher()}
+                    className={`w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500
+                      ${f.digits ? 'text-center tracking-widest text-xl' : ''}`}
+                  />
+                </div>
+              ))}
+            </div>
+            {error && <p className="text-red-500 text-sm mt-3">{error}</p>}
+            <button onClick={createTeacher}
+              className="mt-5 w-full bg-blue-600 text-white rounded-xl py-3 font-semibold hover:bg-blue-700 transition">
+              Create Profile
+            </button>
+            <button onClick={() => { setMode('select'); setError(''); }}
+              className="mt-3 w-full text-gray-400 hover:text-gray-600 text-sm transition py-1">
+              ← Back
+            </button>
+          </div>
+        </div>
+      );
+
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-blue-700 to-indigo-900 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+            <div className="text-center mb-8">
+              <div className="text-5xl mb-3">📚</div>
+              <h1 className="text-3xl font-bold text-gray-800">Primary Marks Book</h1>
+              <p className="text-gray-500 mt-1 text-sm">Select your profile to continue</p>
+            </div>
+            {teachers.length === 0
+              ? <p className="text-center text-gray-400 mb-6 py-4">No profiles yet — create one below.</p>
+              : (
+                <div className="space-y-2 mb-6">
+                  {teachers.map(t => (
+                    <button key={t.id}
+                      onClick={() => { setSelected(t); setMode('pin'); setError(''); setPinInput(''); }}
+                      className="w-full flex items-center gap-4 p-4 rounded-xl border-2 border-gray-100 hover:border-blue-400 hover:bg-blue-50 transition text-left group">
+                      <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center text-xl font-bold text-blue-700 flex-shrink-0 group-hover:bg-blue-200 transition">
+                        {t.name.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold text-gray-800 truncate">{t.name}</div>
+                        {t.className && <div className="text-sm text-gray-500 truncate">{t.className}</div>}
+                      </div>
+                      <div className="ml-auto text-gray-300 group-hover:text-blue-400 text-xl">›</div>
+                    </button>
+                  ))}
+                </div>
+              )
+            }
+            <button onClick={() => { setMode('create'); setError(''); }}
+              className="w-full border-2 border-dashed border-gray-300 rounded-xl py-4 text-gray-500 hover:border-blue-400 hover:text-blue-600 transition font-medium">
+              + New Profile
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── TopBar ───────────────────────────────────────────────────────────────────
+    function TopBar({ teacher, term, setTerm, year, setYear, onLogout }) {
+      const cy = new Date().getFullYear();
+      const years = [cy - 1, cy, cy + 1].map(String);
+      return (
+        <div className="bg-blue-700 text-white px-4 py-2.5 flex items-center gap-3 flex-wrap shadow-md z-10">
+          <div className="flex-1 min-w-0">
+            <div className="font-bold text-base leading-tight truncate">{teacher.name}</div>
+            {teacher.className && <div className="text-blue-200 text-xs">{teacher.className}</div>}
+          </div>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <select value={year} onChange={e => setYear(e.target.value)}
+              className="bg-blue-600 border border-blue-400 rounded-lg px-2 py-1 text-sm font-medium focus:outline-none cursor-pointer">
+              {years.map(y => <option key={y} value={y}>{y}</option>)}
+            </select>
+            <div className="flex rounded-lg overflow-hidden border border-blue-400">
+              {TERMS.map(t => (
+                <button key={t} onClick={() => setTerm(t)}
+                  className={`px-2.5 py-1 text-sm font-semibold transition
+                    ${term === t ? 'bg-white text-blue-700' : 'hover:bg-blue-600'}`}>
+                  {t}
+                </button>
+              ))}
+            </div>
+            <button onClick={onLogout} title="Log out"
+              className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-blue-600 transition text-blue-200 hover:text-white">
+              ✕
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // ── NavBar ───────────────────────────────────────────────────────────────────
+    function NavBar({ view, setView }) {
+      const tabs = [
+        { id: 'class',    label: 'Class View', icon: '📊' },
+        { id: 'student',  label: 'Student',    icon: '👤' },
+        { id: 'manage',   label: 'Students',   icon: '👥' },
+        { id: 'settings', label: 'Settings',   icon: '⚙️' },
+      ];
+      return (
+        <nav className="bg-white border-t border-gray-200 flex z-10 flex-shrink-0">
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setView(t.id)}
+              className={`flex-1 py-2.5 flex flex-col items-center gap-0.5 text-xs font-medium transition
+                border-t-2 -mt-px
+                ${view === t.id
+                  ? 'text-blue-700 border-blue-700'
+                  : 'text-gray-500 hover:text-gray-700 border-transparent'}`}>
+              <span className="text-xl leading-none">{t.icon}</span>
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </nav>
+      );
+    }
+
+    // ── ClassView ────────────────────────────────────────────────────────────────
+    function ClassView({ teacher, term }) {
+      const [subject, setSubject] = useState(SUBJECTS[0]);
+      const [, bump] = useState(0);
+
+      const students = Store.getStudents(teacher.id);
+
+      function setGrade(studentId, t, grade) {
+        Store.setMark(teacher.id, studentId, subject, t, grade);
+        bump(n => n + 1);
+      }
+
+      const marks = Store.getMarks(teacher.id);
+
+      return (
+        <div className="flex-1 overflow-auto p-4">
+          <div className="mb-4">
+            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1">Subject</label>
+            <select value={subject} onChange={e => setSubject(e.target.value)}
+              className="w-full border-2 border-gray-200 rounded-xl px-3 py-2.5 text-base font-medium focus:outline-none focus:border-blue-500 bg-white">
+              {SUBJECTS.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
+
+          {students.length === 0 ? (
+            <div className="text-center py-16 text-gray-400">
+              <div className="text-5xl mb-3">👥</div>
+              <p className="font-medium text-gray-600">No students yet.</p>
+              <p className="text-sm mt-1">Add students in the Students tab.</p>
+            </div>
+          ) : (
+            <>
+              <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 border-b border-gray-100">
+                      <th className="text-left px-4 py-3 font-semibold text-gray-600 min-w-[140px]">Student</th>
+                      {TERMS.map(t => (
+                        <th key={t}
+                          className={`px-3 py-3 font-semibold text-center min-w-[64px]
+                            ${t === term ? 'text-blue-700 bg-blue-50/60' : 'text-gray-500'}`}>
+                          {t}
+                          {t === term && <span className="ml-1 text-blue-300 text-[10px]">●</span>}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {students.map((s, i) => (
+                      <tr key={s.id}
+                        className={`border-b border-gray-50 hover:bg-blue-50/30 transition
+                          ${i % 2 !== 0 ? 'bg-gray-50/40' : ''}`}>
+                        <td className="px-4 py-2.5 font-medium text-gray-800">{s.name}</td>
+                        {TERMS.map(t => {
+                          const grade = (marks[s.id] || {})[subject]
+                            ? ((marks[s.id][subject][t]) || '') : '';
+                          return (
+                            <td key={t} className={`px-3 py-2 text-center ${t === term ? 'bg-blue-50/30' : ''}`}>
+                              <div className="flex justify-center">
+                                <GradeButton value={grade} onChange={g => setGrade(s.id, t, g)} />
+                              </div>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="mt-4 flex gap-2 flex-wrap">
+                {GRADES.map(g => {
+                  const gs = GRADE_STYLE[g];
+                  return (
+                    <div key={g} className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full ${gs.bg} ${gs.text}`}>
+                      {g} — {gs.label}
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+
+    // ── PhotoGallery ─────────────────────────────────────────────────────────────
+    function PhotoGallery({ teacher, student, subject, term }) {
+      const [photos, setPhotos] = useState([]);
+      const [lightbox, setLightbox] = useState(null);
+      const fileRef = useRef();
+
+      async function load() {
+        try {
+          const p = await DB.getPhotos({ teacherId: teacher.id, studentId: student.id, subject });
+          setPhotos(p);
+        } catch { setPhotos([]); }
+      }
+
+      useEffect(() => { load(); }, [student.id, subject]);
+
+      async function handleFile(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = async ev => {
+          try {
+            await DB.savePhoto({
+              teacherId: teacher.id,
+              studentId: student.id,
+              subject,
+              term,
+              filename: file.name,
+              dataURL: ev.target.result,
+              timestamp: Date.now()
+            });
+            await load();
+          } catch (err) { console.error('Photo save failed:', err); }
+        };
+        reader.readAsDataURL(file);
+        e.target.value = '';
+      }
+
+      async function deletePhoto(id) {
+        await DB.deletePhoto(id);
+        setLightbox(null);
+        await load();
+      }
+
+      return (
+        <div>
+          <div className="flex items-center mb-2">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">
+              Work Examples ({photos.length})
+            </span>
+            <button onClick={() => fileRef.current.click()}
+              className="ml-auto text-xs bg-blue-100 text-blue-700 px-3 py-1 rounded-full font-medium hover:bg-blue-200 transition">
+              📷 Add Photo
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              className="hidden"
+              onChange={handleFile}
+            />
+          </div>
+
+          {photos.length > 0 ? (
+            <div className="flex gap-2 flex-wrap mt-1">
+              {photos.map(p => (
+                <img key={p.id} src={p.dataURL} alt={p.filename}
+                  className="w-20 h-20 object-cover rounded-xl cursor-pointer border-2 border-gray-200 hover:border-blue-400 transition"
+                  onClick={() => setLightbox(p)}
+                />
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-400 italic">
+              No photos yet. Tap "Add Photo" to upload or photograph student work.
+            </p>
+          )}
+
+          {lightbox && (
+            <div className="fixed inset-0 bg-black/85 z-50 flex items-center justify-center p-4"
+              onClick={() => setLightbox(null)}>
+              <div className="relative max-w-2xl w-full" onClick={e => e.stopPropagation()}>
+                <img src={lightbox.dataURL} alt={lightbox.filename}
+                  className="w-full rounded-2xl shadow-2xl max-h-[70vh] object-contain" />
+                <p className="text-white/50 text-xs text-center mt-2">
+                  {lightbox.filename} — {new Date(lightbox.timestamp).toLocaleDateString()}
+                </p>
+                <div className="flex gap-3 mt-3 justify-center">
+                  <button onClick={() => deletePhoto(lightbox.id)}
+                    className="bg-red-600 text-white px-5 py-2 rounded-xl font-medium hover:bg-red-700 transition text-sm">
+                    🗑 Delete
+                  </button>
+                  <button onClick={() => setLightbox(null)}
+                    className="bg-white text-gray-700 px-5 py-2 rounded-xl font-medium hover:bg-gray-100 transition text-sm">
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── SubjectCard ──────────────────────────────────────────────────────────────
+    function SubjectCard({ teacher, student, subject, term }) {
+      const [grade, setGradeState] = useState(() => Store.getMark(teacher.id, student.id, subject, term));
+      const [note, setNoteState] = useState(() => Store.getNote(teacher.id, student.id, subject));
+      const [expanded, setExpanded] = useState(false);
+
+      useEffect(() => {
+        setGradeState(Store.getMark(teacher.id, student.id, subject, term));
+        setNoteState(Store.getNote(teacher.id, student.id, subject));
+      }, [student.id, subject, term]);
+
+      function changeGrade(g) {
+        Store.setMark(teacher.id, student.id, subject, term, g);
+        setGradeState(g);
+      }
+
+      function changeNote(text) {
+        Store.setNote(teacher.id, student.id, subject, text);
+        setNoteState(text);
+      }
+
+      const s = GRADE_STYLE[grade || ''];
+      const hasNote = note.trim().length > 0;
+
+      return (
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm overflow-hidden">
+          <div className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-gray-50/70 transition select-none"
+            onClick={() => setExpanded(e => !e)}>
+            <div className="flex-1 min-w-0">
+              <div className="font-semibold text-gray-800 text-sm truncate">{subject}</div>
+              {hasNote && !expanded && (
+                <div className="text-xs text-gray-400 truncate mt-0.5">{note}</div>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {hasNote && <span className="text-xs text-blue-400" title="Has notes">📝</span>}
+              <GradePill grade={grade} size="sm" />
+              <span className="text-gray-300 text-sm">{expanded ? '▲' : '▼'}</span>
+            </div>
+          </div>
+
+          {expanded && (
+            <div className="border-t border-gray-100 px-4 pt-3 pb-4 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                  Grade — {term}
+                </label>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {['', ...GRADES].map(g => {
+                    const gs = GRADE_STYLE[g || ''];
+                    const active = (grade || '') === g;
+                    return (
+                      <button key={g} onClick={() => changeGrade(g)}
+                        className={`w-10 h-10 rounded-lg font-bold text-sm border-2 transition ${gs.bg} ${gs.text}
+                          ${active ? 'border-blue-600 ring-2 ring-blue-300 scale-110' : 'border-transparent hover:scale-105'}`}>
+                        {g || '–'}
+                      </button>
+                    );
+                  })}
+                  {grade && (
+                    <span className={`px-3 py-1 rounded-lg text-xs font-semibold ${s.bg} ${s.text}`}>
+                      {s.label}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">
+                  Notes
+                </label>
+                <textarea
+                  value={note}
+                  onChange={e => changeNote(e.target.value)}
+                  rows={3}
+                  placeholder={`Notes about ${student.name}'s progress in ${subject}…`}
+                  className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-blue-500 resize-none transition"
+                />
+              </div>
+
+              <PhotoGallery teacher={teacher} student={student} subject={subject} term={term} />
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── StudentView ──────────────────────────────────────────────────────────────
+    function StudentView({ teacher, term }) {
+      const [students] = useState(() => Store.getStudents(teacher.id));
+      const [selected, setSelected] = useState(() => {
+        const list = Store.getStudents(teacher.id);
+        return list.length > 0 ? list[0] : null;
+      });
+      const [search, setSearch] = useState('');
+
+      const filtered = students.filter(s =>
+        s.name.toLowerCase().includes(search.toLowerCase())
+      );
+
+      return (
+        <div className="flex flex-1 overflow-hidden min-h-0">
+          {/* Student sidebar */}
+          <div className="w-44 sm:w-52 border-r border-gray-200 bg-gray-50 flex flex-col flex-shrink-0">
+            <div className="p-2 border-b border-gray-200">
+              <input
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                placeholder="Search…"
+                className="w-full border border-gray-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-blue-400 bg-white"
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {filtered.map(s => (
+                <button key={s.id} onClick={() => setSelected(s)}
+                  className={`w-full text-left px-3 py-2.5 text-sm border-b border-gray-100 transition truncate
+                    ${selected?.id === s.id
+                      ? 'bg-blue-600 text-white font-semibold'
+                      : 'hover:bg-white text-gray-700'}`}>
+                  {s.name}
+                </button>
+              ))}
+              {filtered.length === 0 && (
+                <p className="text-center text-gray-400 text-xs p-4">
+                  {students.length === 0 ? 'No students yet.' : 'No match.'}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Subject cards */}
+          <div className="flex-1 overflow-y-auto p-3 min-w-0">
+            {selected ? (
+              <div className="space-y-2">
+                <div className="px-1 pb-2">
+                  <h2 className="text-lg font-bold text-gray-800">{selected.name}</h2>
+                  <p className="text-xs text-gray-400">{SUBJECTS.length} subjects · {term}</p>
+                </div>
+                {SUBJECTS.map(subj => (
+                  <SubjectCard
+                    key={`${selected.id}-${subj}-${term}`}
+                    teacher={teacher}
+                    student={selected}
+                    subject={subj}
+                    term={term}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="h-full flex items-center justify-center text-gray-400">
+                <div className="text-center">
+                  <div className="text-4xl mb-2">👤</div>
+                  <p className="text-sm">{students.length === 0 ? 'Add students in the Students tab' : 'Select a student'}</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ── StudentManager ────────────────────────────────────────────────────────────
+    function StudentManager({ teacher }) {
+      const [students, setStudents] = useState(() => Store.getStudents(teacher.id));
+      const [newName, setNewName] = useState('');
+      const [editing, setEditing] = useState(null);
+      const [editName, setEditName] = useState('');
+      const inputRef = useRef();
+
+      function persist(list) { Store.saveStudents(teacher.id, list); setStudents(list); }
+
+      function add() {
+        const name = newName.trim();
+        if (!name) return;
+        persist([...students, { id: genId(), name }]);
+        setNewName('');
+        inputRef.current?.focus();
+      }
+
+      function remove(id) {
+        if (!window.confirm('Remove this student? Their marks and notes remain in storage but will not appear in the class.')) return;
+        persist(students.filter(s => s.id !== id));
+      }
+
+      function startEdit(s) { setEditing(s.id); setEditName(s.name); }
+
+      function saveEdit(id) {
+        const name = editName.trim();
+        if (name) persist(students.map(s => s.id === id ? { ...s, name } : s));
+        setEditing(null);
+      }
+
+      return (
+        <div className="flex-1 overflow-auto p-4">
+          <div className="max-w-lg mx-auto">
+            <h2 className="text-xl font-bold text-gray-800 mb-4">Manage Students</h2>
+            <div className="flex gap-2 mb-6">
+              <input
+                ref={inputRef}
+                value={newName}
+                onChange={e => setNewName(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && add()}
+                placeholder="Student name"
+                className="flex-1 border-2 border-gray-200 rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500"
+              />
+              <button onClick={add}
+                className="bg-blue-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-blue-700 transition">
+                Add
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              {students.map(s => (
+                <div key={s.id} className="bg-white rounded-xl border border-gray-100 shadow-sm px-4 py-3 flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-blue-100 flex items-center justify-center font-bold text-blue-700 text-sm flex-shrink-0">
+                    {s.name.charAt(0).toUpperCase()}
+                  </div>
+                  {editing === s.id ? (
+                    <>
+                      <input
+                        value={editName}
+                        onChange={e => setEditName(e.target.value)}
+                        autoFocus
+                        onKeyDown={e => e.key === 'Enter' ? saveEdit(s.id) : e.key === 'Escape' && setEditing(null)}
+                        className="flex-1 border-2 border-blue-400 rounded-lg px-2 py-1 focus:outline-none text-sm"
+                      />
+                      <button onClick={() => saveEdit(s.id)} className="text-green-600 hover:text-green-700 font-bold text-xl px-1">✓</button>
+                      <button onClick={() => setEditing(null)} className="text-gray-400 hover:text-gray-600 text-xl px-1">✕</button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="flex-1 font-medium text-gray-800 text-sm">{s.name}</span>
+                      <button onClick={() => startEdit(s)} title="Rename"
+                        className="text-gray-300 hover:text-blue-500 transition text-xl px-1">✎</button>
+                      <button onClick={() => remove(s.id)} title="Remove"
+                        className="text-gray-300 hover:text-red-500 transition text-xl px-1">🗑</button>
+                    </>
+                  )}
+                </div>
+              ))}
+              {students.length === 0 && (
+                <p className="text-center text-gray-400 py-10 text-sm">No students yet. Add one above.</p>
+              )}
+            </div>
+
+            {students.length > 0 && (
+              <p className="text-center text-gray-400 text-sm mt-5">
+                {students.length} student{students.length !== 1 ? 's' : ''}
+              </p>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ── Settings ─────────────────────────────────────────────────────────────────
+    function Settings({ teacher, onLogout }) {
+      const [pin, setPin] = useState('');
+      const [pin2, setPin2] = useState('');
+      const [msg, setMsg] = useState({ text: '', ok: false });
+
+      function changePin() {
+        if (!/^\d{4}$/.test(pin)) return setMsg({ text: 'PIN must be exactly 4 digits.', ok: false });
+        if (pin !== pin2)          return setMsg({ text: 'PINs do not match.', ok: false });
+        const teachers = Store.getTeachers().map(t => t.id === teacher.id ? { ...t, pin } : t);
+        Store.saveTeachers(teachers);
+        teacher.pin = pin;
+        setPin(''); setPin2('');
+        setMsg({ text: 'PIN updated successfully!', ok: true });
+      }
+
+      function exportData() {
+        const data = {
+          teacher: { name: teacher.name, className: teacher.className },
+          students: Store.getStudents(teacher.id),
+          marks: Store.getMarks(teacher.id),
+          notes: Store.getNotes(teacher.id),
+          exported: new Date().toISOString()
+        };
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'marksbook_' + teacher.name.replace(/\s+/g, '_') + '_' + new Date().toISOString().slice(0, 10) + '.json';
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      function deleteProfile() {
+        if (!window.confirm('Permanently delete your profile and ALL data (marks, notes)?\n\nThis cannot be undone.')) return;
+        const teachers = Store.getTeachers().filter(t => t.id !== teacher.id);
+        Store.saveTeachers(teachers);
+        Store.removeTeacherData(teacher.id);
+        onLogout();
+      }
+
+      return (
+        <div className="flex-1 overflow-auto p-4">
+          <div className="max-w-lg mx-auto space-y-4">
+            <h2 className="text-xl font-bold text-gray-800">Settings</h2>
+
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+              <h3 className="font-semibold text-gray-700 mb-2">Profile</h3>
+              <p className="text-sm font-medium text-gray-800">{teacher.name}</p>
+              {teacher.className && <p className="text-sm text-gray-500">{teacher.className}</p>}
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+              <h3 className="font-semibold text-gray-700 mb-3">Change PIN</h3>
+              <div className="space-y-3">
+                {[
+                  { label: 'New PIN',     val: pin,  set: setPin  },
+                  { label: 'Confirm PIN', val: pin2, set: setPin2 }
+                ].map(f => (
+                  <div key={f.label}>
+                    <label className="block text-sm text-gray-600 mb-1">{f.label}</label>
+                    <input
+                      type="password" maxLength={4} value={f.val}
+                      onChange={e => f.set(e.target.value.replace(/\D/g, ''))}
+                      onKeyDown={e => e.key === 'Enter' && changePin()}
+                      className="w-full border-2 border-gray-200 rounded-xl px-3 py-2 focus:outline-none focus:border-blue-500 tracking-widest text-center text-xl"
+                    />
+                  </div>
+                ))}
+                {msg.text && (
+                  <p className={`text-sm ${msg.ok ? 'text-emerald-600' : 'text-red-500'}`}>{msg.text}</p>
+                )}
+                <button onClick={changePin}
+                  className="w-full bg-blue-600 text-white rounded-xl py-2.5 font-semibold hover:bg-blue-700 transition">
+                  Update PIN
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+              <h3 className="font-semibold text-gray-700 mb-1">Export Data</h3>
+              <p className="text-xs text-gray-400 mb-3">Downloads all marks and notes as a JSON file. Photos are stored locally and not included.</p>
+              <button onClick={exportData}
+                className="w-full bg-emerald-600 text-white rounded-xl py-2.5 font-semibold hover:bg-emerald-700 transition">
+                ⬇ Export Marks (JSON)
+              </button>
+            </div>
+
+            <div className="bg-white rounded-2xl border border-red-100 shadow-sm p-5">
+              <h3 className="font-semibold text-red-700 mb-1">Danger Zone</h3>
+              <p className="text-xs text-gray-400 mb-3">Permanently deletes your teacher profile and all marks and notes data.</p>
+              <button onClick={deleteProfile}
+                className="w-full bg-red-600 text-white rounded-xl py-2.5 font-semibold hover:bg-red-700 transition">
+                Delete Profile &amp; All Data
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ── MainApp ──────────────────────────────────────────────────────────────────
+    function MainApp({ teacher, onLogout }) {
+      const [view, setView] = useState('class');
+      const [term, setTerm] = useState('T1');
+      const [year, setYear] = useState(String(new Date().getFullYear()));
+
+      return (
+        <div className="flex flex-col h-screen overflow-hidden">
+          <TopBar teacher={teacher} term={term} setTerm={setTerm} year={year} setYear={setYear} onLogout={onLogout} />
+          <div className="flex-1 overflow-hidden flex flex-col min-h-0">
+            {view === 'class'    && <ClassView      teacher={teacher} term={term} year={year} />}
+            {view === 'student'  && <StudentView    teacher={teacher} term={term} year={year} />}
+            {view === 'manage'   && <StudentManager teacher={teacher} />}
+            {view === 'settings' && <Settings       teacher={teacher} onLogout={onLogout} />}
+          </div>
+          <NavBar view={view} setView={setView} />
+        </div>
+      );
+    }
+
+    // ── App (root) ────────────────────────────────────────────────────────────────
+    function App() {
+      const [ready, setReady] = useState(false);
+      const [teacher, setTeacher] = useState(null);
+
+      useEffect(() => {
+        DB.init()
+          .then(() => setReady(true))
+          .catch(err => { console.warn('IndexedDB unavailable, photo storage disabled:', err); setReady(true); });
+
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.register('sw.js').catch(() => {});
+        }
+      }, []);
+
+      if (!ready) return (
+        <div className="min-h-screen flex items-center justify-center text-gray-400">
+          <div className="text-center">
+            <div className="text-5xl mb-3">📚</div>
+            <p>Loading…</p>
+          </div>
+        </div>
+      );
+
+      if (!teacher) return <LoginScreen onLogin={setTeacher} />;
+      return <MainApp teacher={teacher} onLogout={() => setTeacher(null)} />;
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
 </body>
 </html>
