@@ -97,14 +97,15 @@ The app is a single Node/Express process with an embedded SQLite database
 
 ### Render (recommended, dashboard-only)
 
-This folder includes a `render.yaml` Blueprint that provisions the web
-service, a 1GB persistent disk mounted at `/data`, and a random `JWT_SECRET`
-for you.
+The repo root includes a `render.yaml` Blueprint (Render only auto-detects
+this file at the repository root, even though it points Render at the
+`assessment-app` subfolder) that provisions the web service, a 1GB
+persistent disk mounted at `/data`, and a random `JWT_SECRET` for you.
 
 1. Push this repo to GitHub (already done if you're reading this on GitHub).
 2. In the [Render dashboard](https://dashboard.render.com), click **New +** →
    **Blueprint**, and select this repository.
-3. Render detects `assessment-app/render.yaml` and shows a plan for one web
+3. Render detects `render.yaml` at the repo root and shows a plan for one web
    service (`class-test-portal`) on the **Starter** tier (~$7/month — the
    cheapest tier that supports persistent disks, which this app needs so the
    SQLite database survives restarts). Click **Apply** / **Create**.
