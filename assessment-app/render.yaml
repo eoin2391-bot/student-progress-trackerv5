@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: class-test-portal
+    runtime: node
+    plan: starter
+    rootDir: assessment-app
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DATA_DIR
+        value: /data
+      - key: JWT_SECRET
+        generateValue: true
+    disk:
+      name: class-test-portal-data
+      mountPath: /data
+      sizeGB: 1
