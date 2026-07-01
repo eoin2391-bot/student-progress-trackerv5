@@ -95,15 +95,46 @@ correct answer, exemplar and mark value before saving the test.
 The app is a single Node/Express process with an embedded SQLite database
 (no external DB service required), so it runs on any Node host:
 
-- **Render / Railway / Fly.io** — deploy as a Node web service
-  (`npm install && npm start`). Attach a **persistent volume** mounted at,
-  e.g., `/data`, and set `DATA_DIR=/data` so the SQLite file and JWT secret
-  survive redeploys.
-- **A VPS** — clone the repo, `npm install`, run behind a process manager
-  (pm2/systemd) and a reverse proxy (nginx/Caddy) for TLS.
+### Render (recommended, dashboard-only)
 
-Set `JWT_SECRET` to a fixed random value in production so logins don't
-reset on restart, and back up the `DATA_DIR` (it's the entire database).
+The repo root includes a `render.yaml` Blueprint (Render only auto-detects
+this file at the repository root, even though it points Render at the
+`assessment-app` subfolder) that provisions the web service, a 1GB
+persistent disk mounted at `/data`, and a random `JWT_SECRET` for you.
+
+1. Push this repo to GitHub (already done if you're reading this on GitHub).
+2. In the [Render dashboard](https://dashboard.render.com), click **New +** →
+   **Blueprint**, and select this repository.
+3. Render detects `render.yaml` at the repo root and shows a plan for one web
+   service (`class-test-portal`) on the **Starter** tier (~$7/month — the
+   cheapest tier that supports persistent disks, which this app needs so the
+   SQLite database survives restarts). Click **Apply** / **Create**.
+4. Wait for the first build+deploy to finish, then open the `.onrender.com`
+   URL Render gives you — that's your live "preview" link, the equivalent of
+   the GitHub Pages link the gradebook app uses.
+
+If you'd rather not use the Blueprint, you can instead click **New +** →
+**Web Service**, point it at this repo with root directory `assessment-app`,
+build command `npm install`, start command `npm start`, and manually add a
+disk mounted at `/data` plus an env var `DATA_DIR=/data` under the service's
+**Disks** and **Environment** tabs.
+
+### Railway / Fly.io
+
+Deploy as a Node web service (`npm install && npm start`, root directory
+`assessment-app`). Attach a **persistent volume** mounted at, e.g., `/data`,
+and set `DATA_DIR=/data` so the SQLite file and JWT secret survive redeploys.
+
+### A VPS
+
+Clone the repo, `npm install`, run behind a process manager (pm2/systemd)
+and a reverse proxy (nginx/Caddy) for TLS.
+
+---
+
+Wherever you deploy, set `JWT_SECRET` to a fixed random value in production
+so logins don't reset on restart, and back up the `DATA_DIR` (it's the
+entire database).
 
 ## Known limitations
 
